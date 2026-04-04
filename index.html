@@ -407,13 +407,62 @@ function getExpandedBank(bankKey){
   return expanded;
 }
 function getTotalExpandedCount(){ return Object.keys(APP_DATA.banks).reduce((sum,key)=>sum+getExpandedBank(key).length,0); }
-function pickQuestions(bankKey,count,seedLabel){ const bank=getExpandedBank(bankKey); const recent=new Set(getRecentIds()); const preferred=bank.filter(q=>!recent.has(q.id)); const fallback=bank.filter(q=>recent.has(q.id)); const combined=shuffle([...preferred,...fallback], `${bankKey}-${seedLabel}`); return combined.slice(0,count); }
-function buildQuiz(role){ const pickedIds=[]; const all=[]; const accessNonce=`${Date.now()}-${Math.random()}-${(crypto&&crypto.randomUUID)?crypto.randomUUID():Math.random()}`; role.structure.forEach((block,blockIndex)=>{ const selected=pickQuestions(block.key, block.count, `${role.id}-${block.key}-${accessNonce}`); selected.forEach((q,idx)=>{ all.push({...q, points:block.points, blockLabel:block.label, blockIndex, totalInBlock:block.count, localPosition:idx+1}); pickedIds.push(q.id); }); }); saveRecentIds(pickedIds); return all; }
+function pickQuestions(bankKey,count,seedLabel,usedIds=new Set()){
+  const bank=getExpandedBank(bankKey);
+  const recent=new Set(getRecentIds());
+  const available=bank.filter(q=>!usedIds.has(q.id));
+  const preferred=available.filter(q=>!recent.has(q.id));
+  const fallback=available.filter(q=>recent.has(q.id));
+  const combined=shuffle([...preferred,...fallback], `${bankKey}-${seedLabel}`);
+  return combined.slice(0,count);
+}
+function buildQuiz(role){
+  const pickedIds=[];
+  const usedIds=new Set();
+  const all=[];
+  const accessNonce=`${Date.now()}-${Math.random()}-${(crypto&&crypto.randomUUID)?crypto.randomUUID():Math.random()}`;
+  role.structure.forEach((block,blockIndex)=>{
+    const selected=pickQuestions(block.key, block.count, `${role.id}-${block.key}-${accessNonce}`, usedIds);
+    selected.forEach((q,idx)=>{
+      usedIds.add(q.id);
+      all.push({...q, points:block.points, blockLabel:block.label, blockIndex, totalInBlock:block.count, localPosition:idx+1});
+      pickedIds.push(q.id);
+    });
+  });
+  saveRecentIds(pickedIds);
+  return all;
+}
 function playTone(type){ if(!state.soundOn)return; try{ const ctx=new(window.AudioContext||window.webkitAudioContext)(); const osc=ctx.createOscillator(); const gain=ctx.createGain(); const now=ctx.currentTime; osc.type= type==='block' ? 'triangle' : type==='correct' ? 'sine' : 'square'; if(type==='correct'){ osc.frequency.setValueAtTime(620,now); osc.frequency.linearRampToValueAtTime(860,now+.15); } else if(type==='wrong'){ osc.frequency.setValueAtTime(280,now); osc.frequency.linearRampToValueAtTime(180,now+.18); } else { osc.frequency.setValueAtTime(520,now); osc.frequency.linearRampToValueAtTime(700,now+.22); } gain.gain.setValueAtTime(.001,now); gain.gain.exponentialRampToValueAtTime(.11,now+.03); gain.gain.exponentialRampToValueAtTime(.001,now+.3); osc.connect(gain); gain.connect(ctx.destination); osc.start(now); osc.stop(now+.32); }catch(e){} }
 function renderFilters(){ const groups=['Todos','Médio','Superior']; filtersEl.innerHTML=groups.map(group=>`<button class="filter-btn ${state.activeFilter===group?'active':''}" onclick="setFilter('${group}')">${group}</button>`).join(''); }
 function setFilter(group){ state.activeFilter=group; renderFilters(); renderRoles(); }
 function renderRoles(){ const roles=APP_DATA.roles.filter(role=>state.activeFilter==='Todos'||role.level===state.activeFilter); roleGridEl.innerHTML=roles.map(role=>{ const totalQuestions=role.structure.reduce((acc,item)=>acc+item.count,0); const totalPoints=role.structure.reduce((acc,item)=>acc+item.count*item.points,0); return `<article class="role-card"><span class="badge primary">${role.level}</span><h3>${role.title}</h3><div class="role-desc">${role.programLabel}</div><div class="role-random-note">Mais de 5.000 questões no banco com montagem aleatória a cada novo acesso.</div><div class="meta"><div class="mini"><span>Vagas</span><strong>${role.vacancies}</strong></div><div class="mini"><span>Carga horária</span><strong>${role.workload}</strong></div><div class="mini"><span>Remuneração</span><strong>${role.pay}</strong></div><div class="mini"><span>Prova</span><strong>${totalQuestions} questões • ${totalPoints} pts</strong></div></div><div class="inline-actions" style="margin-top:auto;"><button class="btn btn-primary" onclick="startRole('${role.id}')">Começar agora</button></div></article>`; }).join(''); }
-function startRole(roleId){ const role=APP_DATA.roles.find(item=>item.id===roleId); if(!role)return; state.role=role; state.questions=buildQuiz(role); state.currentIndex=0; state.answers={}; state.score=0; state.timer=0; clearInterval(state.timerRef); state.timerRef=setInterval(()=>{ state.timer+=1; $('hudTime').textContent=formatTime(state.timer); },1000); document.body.classList.remove('result-mode'); document.body.classList.add('quiz-mode'); $('quizView').classList.remove('hidden'); $('resultView').classList.add('hidden'); window.scrollTo({top:0,behavior:'auto'}); const totalQuestions=role.structure.reduce((acc,item)=>acc+item.count,0); const totalPoints=role.structure.reduce((acc,item)=>acc+item.count*item.points,0); $('quizLead').textContent=`Você está respondendo o caderno de ${role.title}: ${totalQuestions} questões, ${totalPoints} pontos, acompanhamento em tempo real e seleção aleatória entre mais de 5.000 questões.`; $('hudStructureText').textContent=`${totalQuestions} questões • ${totalPoints} pontos • referência de 50 pontos`; showBlockOverlay(0,true); }
+function startRole(roleId){
+  const role=APP_DATA.roles.find(item=>item.id===roleId);
+  if(!role)return;
+  state.role=role;
+  state.questions=buildQuiz(role);
+  const uniqueIds=new Set(state.questions.map(q=>q.id));
+  if(uniqueIds.size!==state.questions.length){
+    alert('Foi identificada uma repetição indevida de questões. O simulado será remontado automaticamente.');
+    state.questions=buildQuiz(role);
+  }
+  state.currentIndex=0;
+  state.answers={};
+  state.score=0;
+  state.timer=0;
+  clearInterval(state.timerRef);
+  state.timerRef=setInterval(()=>{ state.timer+=1; $('hudTime').textContent=formatTime(state.timer); },1000);
+  document.body.classList.remove('result-mode');
+  document.body.classList.add('quiz-mode');
+  $('quizView').classList.remove('hidden');
+  $('resultView').classList.add('hidden');
+  window.scrollTo({top:0,behavior:'auto'});
+  const totalQuestions=role.structure.reduce((acc,item)=>acc+item.count,0);
+  const totalPoints=role.structure.reduce((acc,item)=>acc+item.count*item.points,0);
+  $('quizLead').textContent=`Você está respondendo o caderno de ${role.title}: ${totalQuestions} questões, ${totalPoints} pontos, acompanhamento em tempo real e seleção aleatória entre mais de 5.000 questões.`;
+  $('hudStructureText').textContent=`${totalQuestions} questões • ${totalPoints} pontos • referência de 50 pontos`;
+  showBlockOverlay(0,true);
+}
 function computeCurrentScore(){ let points=0; Object.entries(state.answers).forEach(([index,answerIndex])=>{ const q=state.questions[Number(index)]; if(q && answerIndex===q.answer) points+=q.points; }); return points; }
 function updateHud(){ const total=state.questions.length; const answered=Object.keys(state.answers).length; const points=computeCurrentScore(); const percentOverTotal=total ? (points/100)*100 : 0; $('hudRole').textContent=state.role.title; $('hudProgress').textContent=`${Math.min(state.currentIndex+1,total)} / ${total}`; $('hudBar').style.width=`${(answered/total)*100}%`; $('hudScore').textContent=`${points.toFixed(1).replace('.',',')} / 100`; $('hudPercent').textContent=`${percentOverTotal.toFixed(0)}% do total`; renderLiveReport(); }
 function getLiveChipClass(percent){ if(percent>=70) return 'good'; if(percent>=50) return 'mid'; return 'low'; }
